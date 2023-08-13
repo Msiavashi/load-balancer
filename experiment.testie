@@ -1,0 +1,58 @@
+%variables
+
+//Things you should check out
+LBMODE=rr
+LSTMODE=cpu
+GEN_RATE=100
+DELAY=2
+
+//Things you might change
+GEN_CONCURRENT=32
+GEN_THREADS=4
+
+
+%late_variables
+HTTP_PORT=80
+GEN_TIME=10
+WRKNIC=0
+WRK_HOST=100.0.0.1
+WRK_PROTOCOL=http
+
+%config
+default_repo=local
+var_unit={SRV: }
+var_name={result-SRV:Server load (%),SRVLOAD:Time (s)}
+graph_result_as_variable={SRV(.*):SRV}
+n_runs=1
+
+
+%late_variables
+FILE_PATH=EXPAND(?fsize=1024&delay=$DELAY)
+
+%script@l delay=3
+fname="results$RANDOM"
+echo "Launching generator..."
+chmod +x wrk.sh
+taskset -c 0-0 ~/mininet/util/m h1 ./wrk.sh 2>&1 | tee "$fname"
+stat=$?
+cat $fname | grep "Transfer/sec" | awk '{printf "RESULT-THROUGHPUT %s\n", $2}' | head -n 1
+cat $fname | grep "Requests/sec" | awk '{printf "RESULT-REQUEST %s\n", $2}' | head -n 1
+cat $fname | grep "Latency" | awk '{printf "RESULT-LATENCY %s\n", $2}' | head -n 1
+cat $fname | grep "99.000%" | awk '{printf "RESULT-LAT99 %s\n", $2}' | head -n 1
+#cat $fname | awk '/Detailed Percentile/{flag=1;next}/Mean/{flag=0}flag' | tail -n +3 | head -n -1 | awk '{printf "%f-RESULT-CDFLAT %f\n", $1*1000, $2}' | uniq
+cat $fname | grep "Socket errors" | awk '{printf "RESULT-HTTPTIMEOUT %s\n", $10 }' | head -n 1
+
+rm $fname
+sleep 2
+exit $stat
+
+%file@l wrk.sh
+#!/bin/bash
+~/wrk2/wrk -c $GEN_CONCURRENT -r --latency --rate $GEN_RATE -t $(( $GEN_THREADS if $GEN_THREADS <= $GEN_CONCURRENT else $GEN_CONCURRENT)) -d${GEN_TIME}s "${WRK_PROTOCOL}://${WRK_HOST}:${HTTP_PORT}/${FILE_PATH}"
+
+%-nolb:script@l
+echo "Launching new lb"
+cd /home/vagrant/cheetah-fastclick
+sudo killall click
+sleep 1
+sudo ~/mininet/util/m lb1 ./bin/click --dpdk -l 1-1 --vdev=eth_af_packet0,iface=lb1-eth0 --vdev=eth_af_packet1,iface=lb1-eth1 -- tmp.config.click mode=$LBMODE leastmode=$LSTMODE
